@@ -148,21 +148,22 @@ public class ConversationUtils {
         }
     }
 
-    public static void main(String[] args) throws Exception {
-        Integer key = 0;
-        String value = "roman";
-
-        encodeF(key, value)
-                .compose(s -> {
-                    System.out.println(s);
-                    return Future.succeededFuture(s);
-                }).compose(ConversationUtils::decodeF)
-                .setHandler(event -> {
-                    if (event.succeeded()) {
-                        System.out.println(event.result());
-                    } else {
-                        System.out.println(event.cause());
-                    }
-                });
-    }
+    // TODO: has to be removed.
+//    public static void main(String[] args) throws Exception {
+//        Integer key = 0;
+//        String value = "roman";
+//
+//        encodeF(key, value)
+//                .compose(s -> {
+//                    System.out.println(s);
+//                    return Future.succeededFuture(s);
+//                }).compose(ConversationUtils::decodeF)
+//                .setHandler(event -> {
+//                    if (event.succeeded()) {
+//                        System.out.println(event.result());
+//                    } else {
+//                        System.out.println(event.cause());
+//                    }
+//                });
+//    }
 }

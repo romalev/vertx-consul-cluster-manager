@@ -109,13 +109,6 @@ public final class CacheMultiMap<K, V> implements KvStoreListener {
         }
     }
 
-    /**
-     * Gets event bus address out of  multimap key - i.e. __vertx.subs/users.create.channel/{nodeId} -> users.create.channel.
-     */
-    private String getEventBusAddress(String key) {
-        return key.substring(key.indexOf("/") + 1, key.lastIndexOf("/"));
-    }
-
     @Override
     public String toString() {
         return Json.encodePrettily(cache);
