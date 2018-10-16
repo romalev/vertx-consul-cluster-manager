@@ -1,9 +1,6 @@
 package io.vertx.spi.cluster.consul;
 
-import io.vertx.core.AsyncResult;
-import io.vertx.core.Future;
-import io.vertx.core.Handler;
-import io.vertx.core.Vertx;
+import io.vertx.core.*;
 import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.core.shareddata.AsyncMap;
@@ -21,6 +18,11 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.TimeoutException;
+
+import static java.util.concurrent.TimeUnit.MILLISECONDS;
+import static java.util.concurrent.TimeUnit.NANOSECONDS;
 
 /**
  * Cluster manager that uses Consul. Given implementation is based on vertx consul client.
@@ -39,8 +41,8 @@ public class ConsulClusterManager implements ClusterManager {
     private static final Logger log = LoggerFactory.getLogger(ConsulClusterManager.class);
     private final String nodeId;
     private final ConsulClientOptions cClOptns;
-    private final Map<String, ConsulLock> locks = new ConcurrentHashMap<>();
-    private final Map<String, ConsulCounter> counters = new ConcurrentHashMap<>();
+    private final Map<String, Lock> locks = new ConcurrentHashMap<>();
+    private final Map<String, Counter> counters = new ConcurrentHashMap<>();
     private final Map<String, AsyncMap<?, ?>> asyncMaps = new ConcurrentHashMap<>();
     private final Map<String, AsyncMultiMap<?, ?>> asyncMultiMaps = new ConcurrentHashMap<>();
     private Vertx vertx;
@@ -96,10 +98,30 @@ public class ConsulClusterManager implements ClusterManager {
 
     @Override
     public void getLockWithTimeout(String name, long timeout, Handler<AsyncResult<Lock>> resultHandler) {
-        Future<Lock> futureLock = Future.future();
-        Lock lock = locks.computeIfAbsent(name, key -> new ConsulLock(name, nodeId, timeout, vertx, cC));
-        futureLock.complete(lock);
-        futureLock.setHandler(resultHandler);
+        vertx.executeBlocking(futureLock -> {
+            if (locks.containsKey(name)) {
+                futureLock.complete(locks.get(name));
+                return;
+            }
+            ConsulLock lock = new ConsulLock(name, nodeId, nM.getLockSessionid(), vertx, cC);
+            boolean lockObtained = false;
+            long remaining = timeout;
+            do {
+                long start = System.nanoTime();
+                try {
+                    lockObtained = lock.tryObtain();
+                } catch (InterruptedException | ExecutionException | TimeoutException e) {
+                    // OK continue
+                }
+                remaining = remaining - MILLISECONDS.convert(System.nanoTime() - start, NANOSECONDS);
+            } while (!lockObtained && remaining > 0);
+            if (lockObtained) {
+                locks.putIfAbsent(name, lock);
+                futureLock.complete(lock);
+            } else {
+                throw new VertxException("Timed out waiting to get lock " + name);
+            }
+        }, false, resultHandler);
     }
 
     @Override
@@ -151,6 +173,8 @@ public class ConsulClusterManager implements ClusterManager {
         Future<Void> resultFuture = Future.future();
         log.trace(nodeId + " is trying to leave the cluster.");
         if (active) {
+            // forcibly release all lock being held by node.
+            locks.values().forEach(Lock::release);
             active = false;
             cM.close();
             nM.leave(resultFuture.completer());

@@ -67,6 +67,15 @@ public class AliceService {
                 event.response().setStatusCode(HttpResponseStatus.OK.code()).end("Vertx closed.");
             });
 
+
+            router.get("/serviceAObtainLock").handler(event -> {
+                vertx.sharedData().getLockWithTimeout("testLock", 10, resultHandler -> {
+                    if (resultHandler.succeeded()) {
+                        event.response().setStatusCode(HttpResponseStatus.OK.code()).end("Lock has been obtained.!");
+                    }
+                });
+            });
+
             router.get("/serviceA").handler(event -> {
 //                vertx.sharedData().getAsyncMap("custom", result -> {
 //                    if (result.succeeded()) {

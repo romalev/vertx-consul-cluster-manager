@@ -55,7 +55,6 @@ public class ConsulNodeManager extends ConsulMap<String, String> implements Cons
 
     private final CacheManager cM;
     private final String checkId;
-    private final String sessionName;
     private final Map haInfoMap = new ConcurrentHashMap<>(); // dedicated cache to initialize and keep haInfo.
     private JsonObject tcpAddress = new JsonObject(); // tcp address of node.
     // local cache of all vertx cluster nodes.
@@ -63,13 +62,14 @@ public class ConsulNodeManager extends ConsulMap<String, String> implements Cons
     private NetServer netServer;
     // consul session id used to lock map entries.
     private String sessionId;
+    // consul lock dedicated session id;
+    private String lockSessionid;
     private NodeListener nodeListener;
 
     public ConsulNodeManager(Vertx vertx, ConsulClient cC, CacheManager cM, String nodeId) {
         super("__vertx.nodes", nodeId, vertx, cC);
         this.cM = cM;
         this.checkId = "tcpCheckFor-" + nodeId;
-        this.sessionName = "sessionFor-" + nodeId;
         printLocalNodeMap();
     }
 
@@ -81,7 +81,18 @@ public class ConsulNodeManager extends ConsulMap<String, String> implements Cons
         createTcpServer()
                 .compose(aVoid -> registerService())
                 .compose(aVoid -> registerTcpCheck())
-                .compose(aVoid -> registerSession())
+                .compose(aVoid ->
+                        registerSession("Session for ephemeral keys of: " + nodeId, checkId)
+                                .compose(s -> {
+                                    sessionId = s;
+                                    return Future.succeededFuture();
+                                }))
+                .compose(aVoid ->
+                        registerSession("Session for locks of: " + nodeId, checkId)
+                                .compose(s -> {
+                                    lockSessionid = s;
+                                    return Future.succeededFuture();
+                                }))
                 .compose(aVoid -> registerNode())
                 .compose(aVoid -> discoverNodes())
                 .compose(aVoid -> initHaInfo())
@@ -95,7 +106,8 @@ public class ConsulNodeManager extends ConsulMap<String, String> implements Cons
         haInfoMap.clear();
         netServer.close();
         nodes.clear();
-        destroySession()
+        destroySession(sessionId)
+                .compose(aVoid -> destroySession(lockSessionid))
                 .compose(aVoid -> deregisterNode())
                 .compose(aVoid -> deregisterTcpCheck())
                 .setHandler(resultHandler);
@@ -113,6 +125,10 @@ public class ConsulNodeManager extends ConsulMap<String, String> implements Cons
      */
     public String getSessionId() {
         return sessionId;
+    }
+
+    public String getLockSessionid() {
+        return lockSessionid;
     }
 
     @Override
@@ -301,49 +317,6 @@ public class ConsulNodeManager extends ConsulMap<String, String> implements Cons
                     log.trace("[" + nodeId + "]" + " - Available nodes within the cluster: " + nodes);
                     return Future.succeededFuture();
                 });
-    }
-
-    /**
-     * Creates consul session. Consul session is used (in context of vertx cluster manager) to create ephemeral map entries.
-     *
-     * @return completed future if consul session (consul services) has been successfully registered in consul cluster,
-     * failed future - otherwise.
-     */
-    private Future<Void> registerSession() {
-        Future<Void> future = Future.future();
-        SessionOptions sessionOptions = new SessionOptions()
-                .setBehavior(SessionBehavior.DELETE)
-                .setName(sessionName)
-                .setChecks(Arrays.asList(checkId, "serfHealth"));
-
-        consulClient.createSessionWithOptions(sessionOptions, session -> {
-            if (session.succeeded()) {
-                log.trace("[" + nodeId + "]" + " - Session: " + session.result() + " has been registered.");
-                sessionId = session.result();
-                future.complete();
-            } else {
-                log.error("[" + nodeId + "]" + " - Failed to register the session.", session.cause());
-                future.fail(session.cause());
-            }
-        });
-        return future;
-    }
-
-    /**
-     * Destroys node's session in consul.
-     */
-    private Future<Void> destroySession() {
-        Future<Void> future = Future.future();
-        consulClient.destroySession(sessionId, resultHandler -> {
-            if (resultHandler.succeeded()) {
-                log.trace("[" + nodeId + "]" + " - Session: " + sessionId + " has been successfully destroyed.");
-                future.complete();
-            } else {
-                log.error("[" + nodeId + "]" + " - Failed to destroy session: " + sessionId, resultHandler.cause());
-                future.fail(resultHandler.cause());
-            }
-        });
-        return future;
     }
 
     /**

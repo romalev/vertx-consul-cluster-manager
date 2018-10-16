@@ -7,6 +7,7 @@ import io.vertx.core.logging.Logger;
 import io.vertx.core.logging.LoggerFactory;
 import io.vertx.ext.consul.*;
 
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -195,6 +196,49 @@ abstract class ConsulMap<K, V> {
             }
         });
         return keyValueListFuture;
+    }
+
+    /**
+     * Creates consul session. Consul session is used (in context of vertx cluster manager) to create ephemeral map entries.
+     *
+     * @param sessionName - session name.
+     * @param checkId     - id of the check session will get bound to.
+     * @return session id.
+     */
+    Future<String> registerSession(String sessionName, String checkId) {
+        Future<String> future = Future.future();
+        SessionOptions sessionOptions = new SessionOptions()
+                .setBehavior(SessionBehavior.DELETE)
+                .setName(sessionName)
+                .setChecks(Arrays.asList(checkId, "serfHealth"));
+
+        consulClient.createSessionWithOptions(sessionOptions, session -> {
+            if (session.succeeded()) {
+                log.trace("[" + nodeId + "]" + " - " + sessionName + ": " + session.result() + " has been registered.");
+                future.complete(session.result());
+            } else {
+                log.error("[" + nodeId + "]" + " - Failed to register the session.", session.cause());
+                future.fail(session.cause());
+            }
+        });
+        return future;
+    }
+
+    /**
+     * Destroys node's session in consul.
+     */
+    Future<Void> destroySession(String sessionId) {
+        Future<Void> future = Future.future();
+        consulClient.destroySession(sessionId, resultHandler -> {
+            if (resultHandler.succeeded()) {
+                log.trace("[" + nodeId + "]" + " - Session: " + sessionId + " has been successfully destroyed.");
+                future.complete();
+            } else {
+                log.error("[" + nodeId + "]" + " - Failed to destroy session: " + sessionId, resultHandler.cause());
+                future.fail(resultHandler.cause());
+            }
+        });
+        return future;
     }
 
     /**
