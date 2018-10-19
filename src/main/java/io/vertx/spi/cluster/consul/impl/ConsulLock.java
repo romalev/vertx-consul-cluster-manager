@@ -35,60 +35,88 @@ import java.util.concurrent.TimeoutException;
  */
 public class ConsulLock extends ConsulMap<String, String> implements Lock {
 
-    private static final Logger log = LoggerFactory.getLogger(ConsulLock.class);
+  private static final Logger log = LoggerFactory.getLogger(ConsulLock.class);
 
-    private final String lockName;
-    // lock MUST be bound to tcp check since failed (failing) node must give up any locks being held by it,
-    // therefore given session id is already bounded to tcp check.
-    private String sessionId;
+  private final String lockName;
+  private final String sessionId;
+  private final long timeout;
 
-    public ConsulLock(String name, String nodeId, String sessionId, Vertx vertx, ConsulClient consulClient) {
-        super("__vertx.locks", nodeId, vertx, consulClient);
-        this.lockName = name;
-        this.sessionId = sessionId;
+  /**
+   * Creates an instance of consul based lock. MUST NOT be executed on the vertx event loop.
+   *
+   * @param name         - lock's name.
+   * @param nodeId       - node's id that lock belongs to.
+   * @param checkId      - check id to which session id will get bound to.
+   * @param timeout      - time trying to obtain a lock in ms.
+   * @param vertx        - vertx instance
+   * @param consulClient - consul client instance.
+   */
+  public ConsulLock(String name, String nodeId, String checkId, long timeout, Vertx vertx, ConsulClient consulClient) {
+    super("__vertx.locks", nodeId, vertx, consulClient);
+    this.lockName = name;
+    this.timeout = timeout;
+    this.sessionId = obtainSessionId(checkId);
+  }
+
+
+  /**
+   * Tries to obtain a lock. MUST NOT be executed on the vertx event loop.
+   *
+   * @return true - lock has been successfully obtained, false - otherwise.
+   * @throws InterruptedException
+   * @throws TimeoutException
+   * @throws ExecutionException
+   */
+  public boolean tryObtain() throws InterruptedException, TimeoutException, ExecutionException {
+    log.trace("[" + nodeId + "]" + " is trying to obtain a lock on: " + lockName);
+    CompletableFuture<Boolean> futureObtainedLock = new CompletableFuture<>();
+    obtain().setHandler(event -> {
+      if (event.succeeded()) futureObtainedLock.complete(event.result());
+      else futureObtainedLock.completeExceptionally(event.cause());
+    });
+
+    boolean lockObtained = futureObtainedLock.get(timeout, TimeUnit.MILLISECONDS);
+    if (lockObtained) {
+      log.info("Lock on: " + lockName + " has been obtained.");
     }
+    return lockObtained;
+  }
 
+  @Override
+  public void release() {
+    destroySession(sessionId).setHandler(event -> {
+      if (event.succeeded()) log.info("Lock on: " + lockName + " has been released.");
+      else
+        throw new VertxException("Failed to release a lock on: " + lockName + ". Lock might have been already released.", event.cause());
+    });
+  }
 
-    /**
-     * Tries to obtain a lock. Note: Call is BLOCKING!!!
-     *
-     * @return true - lock has been successfully obtained, false - otherwise.
-     * @throws InterruptedException
-     * @throws TimeoutException
-     * @throws ExecutionException
-     */
-    public boolean tryObtain() throws InterruptedException, TimeoutException, ExecutionException {
-        log.trace("[" + nodeId + "]" + " is trying to obtain a lock on: " + lockName);
-        CompletableFuture<Boolean> futureObtainedLock = new CompletableFuture<>();
-        obtain().setHandler(event -> {
-            if (event.succeeded()) futureObtainedLock.complete(event.result());
-            else futureObtainedLock.completeExceptionally(event.cause());
-        });
-
-        boolean lockObtained = futureObtainedLock.get(1000, TimeUnit.MILLISECONDS);
-        if (lockObtained) {
-            log.info("Lock on: " + lockName + " has been obtained.");
-        }
-        return lockObtained;
+  /**
+   * Obtains a session id from consul. IMPORTANT : lock MUST be bound to tcp check since failed (failing) node must give up any locks being held by it,
+   * therefore obtained session id is being already bounded to tcp check.
+   *
+   * @param checkId - tcp check id.
+   * @return consul session id.
+   */
+  private String obtainSessionId(String checkId) {
+    CompletableFuture<String> futureSessionId = new CompletableFuture<>();
+    registerSession("Session for lock: " + lockName + " of: " + nodeId, checkId).setHandler(event -> {
+      if (event.succeeded()) futureSessionId.complete(event.result());
+      else futureSessionId.completeExceptionally(event.cause());
+    });
+    String sessionId;
+    try {
+      sessionId = futureSessionId.get(timeout, TimeUnit.MILLISECONDS);
+    } catch (InterruptedException | ExecutionException | TimeoutException e) {
+      throw new VertxException(e);
     }
+    return sessionId;
+  }
 
-    @Override
-    public void release() {
-        vertx.executeBlocking(event ->
-                removeConsulValue(keyPath(lockName)).setHandler(removeResult -> {
-                    if (removeResult.succeeded()) {
-                        log.info("Lock on: " + lockName + " has been released.");
-                        event.complete();
-                    } else {
-                        throw new VertxException("Failed to release a lock on: " + lockName, removeResult.cause());
-                    }
-                }), false, null);
-    }
-
-    /**
-     * Obtains the lock asynchronously.
-     */
-    private Future<Boolean> obtain() {
-        return putConsulValue(keyPath(lockName), "lockAcquired", new KeyValueOptions().setAcquireSession(sessionId));
-    }
+  /**
+   * Obtains the lock asynchronously.
+   */
+  private Future<Boolean> obtain() {
+    return putConsulValue(keyPath(lockName), "lockAcquired", new KeyValueOptions().setAcquireSession(sessionId));
+  }
 }
