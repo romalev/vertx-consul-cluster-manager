@@ -92,7 +92,7 @@ public class AliceService {
         event.response().setStatusCode(HttpResponseStatus.OK.code()).end("Working!");
       });
 
-      httpServer.requestHandler(router::accept).listen(Utils.findPort(2000, 2010), result -> {
+      httpServer.requestHandler(router).listen(Utils.findPort(2000, 2010), result -> {
         if (result.succeeded()) {
           log.trace("ServiceAVerticle has been started on port: '{}'", result.result().actualPort());
           startFuture.complete();
